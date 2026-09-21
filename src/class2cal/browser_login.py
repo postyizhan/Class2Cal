@@ -28,20 +28,19 @@ log = logging.getLogger(__name__)
 # 门户会话依赖的 cookie。名字随金智版本略有差异，故按前缀宽松匹配。
 SESSION_COOKIE_HINTS = ("JSESSIONID", "SESSION", "CASTGC", "iPlanetDirectoryPro", "_WEU")
 
-LOGIN_URL = f"{config.SSO_BASE}/esc-sso/login?service={config.PORTAL_BASE}/login"
-
 
 class ManualLoginError(RuntimeError):
     """手动登录流程失败。"""
 
 
-def open_login_page() -> None:
+def open_login_page(cfg: config.Config) -> None:
     """用默认浏览器打开登录页。"""
+    login_url = f"{cfg.sso_base}/esc-sso/login?service={cfg.portal_base}/login"
     try:
-        subprocess.run(["open", LOGIN_URL], check=True, timeout=15)
+        subprocess.run(["open", login_url], check=True, timeout=15)
     except (subprocess.SubprocessError, OSError) as exc:
         raise ManualLoginError(
-            f"打不开浏览器：{exc}\n手动访问这个地址登录：{LOGIN_URL}"
+            f"打不开浏览器：{exc}\n手动访问这个地址登录：{login_url}"
         ) from exc
 
 
@@ -84,14 +83,19 @@ def parse_curl_command(text: str) -> dict[str, str]:
     return cookies
 
 
-def build_session(cookies: dict[str, str]) -> requests.Session:
+def build_session(cookies: dict[str, str], cfg: config.Config) -> requests.Session:
     """用给定 cookie 组装会话。同时挂到门户与 SSO 两个域。"""
     if not cookies:
         raise ManualLoginError("没解析到任何 cookie")
 
     session = sso.new_session()
+    # 从 cfg 提取域名
+    from urllib.parse import urlparse
+    sso_domain = urlparse(cfg.sso_base).netloc
+    portal_domain = urlparse(cfg.portal_base).netloc
+
     for name, value in cookies.items():
-        for domain in ("all.example.edu.cn", "sso.example.edu.cn"):
+        for domain in (portal_domain, sso_domain):
             session.cookies.set(name, value, domain=domain, path="/")
     return session
 
@@ -115,15 +119,15 @@ def import_cookies(raw: str, cfg: config.Config) -> dict:
             "/".join(SESSION_COOKIE_HINTS[:3]),
         )
 
-    session = build_session(cookies)
-    user = sso.verify_session(session)
+    session = build_session(cookies, cfg)
+    user = sso.verify_session(session, cfg)
     if not user:
         raise ManualLoginError(
             "cookie 导入了但会话无效。常见原因：\n"
             "  - 用 document.cookie 复制的，漏了 HttpOnly 的会话 cookie\n"
             "  - 复制的是 SSO 登录页的请求，不是登录成功后门户页面的\n"
             "  - 会话已经过期\n"
-            f"重新登录，在 {config.PORTAL_BASE} 的请求上「Copy as cURL」。"
+            f"重新登录，在 {cfg.portal_base} 的请求上「Copy as cURL」。"
         )
 
     sso.save_session(session, cfg.session_path)
@@ -138,16 +142,22 @@ def import_from_file(path: Path, cfg: config.Config) -> dict:
     return import_cookies(path.read_text(encoding="utf-8"), cfg)
 
 
-INSTRUCTIONS = f"""\
+def get_instructions(cfg: config.Config) -> str:
+    """生成手动登录指引（包含学校特定的 URL）。"""
+    login_url = f"{cfg.sso_base}/esc-sso/login?service={cfg.portal_base}/login"
+    from urllib.parse import urlparse
+    portal_domain = urlparse(cfg.portal_base).netloc
+
+    return f"""\
 学校登录时强制校验滑块验证码，需要你手动登录一次，之后程序复用这个会话。
 
 步骤：
   1. 浏览器已打开登录页（没打开就手动访问）
-     {LOGIN_URL}
+     {login_url}
   2. 输入账号密码、拖动滑块，正常登录
-  3. 等页面跳转到门户首页 {config.PORTAL_BASE}
+  3. 等页面跳转到门户首页 {cfg.portal_base}
   4. 按 F12 打开开发者工具 → Network（网络）面板
-  5. 刷新一下页面，在请求列表里点任意一条发往 all.example.edu.cn 的请求
+  5. 刷新一下页面，在请求列表里点任意一条发往 {portal_domain} 的请求
   6. 右键 → Copy（复制）→ Copy as cURL
   7. 粘贴到下面，然后按 Ctrl-D（Windows 键盘按 Ctrl-Z）结束输入
 

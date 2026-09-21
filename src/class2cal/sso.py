@@ -27,7 +27,6 @@ log = logging.getLogger(__name__)
 QUERY_ALL_VALID = "/esc-sso/api/v3/auth/queryAllValid"
 DO_LOGIN = "/esc-sso/api/v3/auth/doLogin"
 CAS_LOGIN = "/esc-sso/login"
-PORTAL_LOGIN_CALLBACK = f"{config.PORTAL_BASE}/login"
 GET_LOGIN_USER = "/getLoginUser"
 
 AUTH_TYPE_LOCAL = "webLocalAuth"
@@ -106,10 +105,10 @@ def load_session(path: Path) -> requests.Session | None:
     return s
 
 
-def verify_session(session: requests.Session) -> dict | None:
+def verify_session(session: requests.Session, cfg: config.Config) -> dict | None:
     """校验会话是否还活着。返回登录用户信息，未登录返回 None。"""
     try:
-        resp = session.get(f"{config.PORTAL_BASE}{GET_LOGIN_USER}", timeout=15)
+        resp = session.get(f"{cfg.portal_base}{GET_LOGIN_USER}", timeout=15)
         data = resp.json()
     except (requests.RequestException, ValueError):
         return None
@@ -117,9 +116,9 @@ def verify_session(session: requests.Session) -> dict | None:
     return data.get("data") or None
 
 
-def fetch_auth_params(session: requests.Session) -> dict:
+def _fetch_auth_params(session: requests.Session, cfg: config.Config) -> dict:
     """取 RSA 公钥与登录方式配置。此接口无需登录。"""
-    resp = session.get(f"{config.SSO_BASE}{QUERY_ALL_VALID}", timeout=15)
+    resp = session.get(f"{cfg.sso_base}{QUERY_ALL_VALID}", timeout=15)
     try:
         data = resp.json()["data"]
     except (ValueError, KeyError) as exc:
@@ -151,7 +150,8 @@ def login(cfg: config.Config) -> requests.Session:
     username, password = config.require_sso_credentials(cfg)
     session = new_session()
 
-    auth = fetch_auth_params(session)
+    auth = _fetch_auth_params(session, cfg)
+    portal_callback = f"{cfg.portal_base}/login"
     # publicKeyId 必须放在 dataField 内部。前端的加密函数是
     #   gt(明文, 公钥信息, dataField) { dataField.publicKeyId = 公钥信息.publicKeyId; ... }
     # 放到顶层服务端取不到 keyId，解密失败后统一报「用户名或密码错误」，极易误判成密码错。
@@ -163,11 +163,11 @@ def login(cfg: config.Config) -> requests.Session:
             "vcode": "",
             "publicKeyId": auth["public_key_id"],
         },
-        "redirectUri": PORTAL_LOGIN_CALLBACK,
+        "redirectUri": portal_callback,
     }
 
     resp = session.post(
-        f"{config.SSO_BASE}{DO_LOGIN}",
+        f"{cfg.sso_base}{DO_LOGIN}",
         json=payload,
         headers={"Content-Type": "application/json"},
         timeout=20,
@@ -181,13 +181,13 @@ def login(cfg: config.Config) -> requests.Session:
 
     # doLogin 成功后走 CAS 跳转，把 ticket 换成门户会话 cookie。
     session.get(
-        f"{config.SSO_BASE}{CAS_LOGIN}",
-        params={"service": PORTAL_LOGIN_CALLBACK},
+        f"{cfg.sso_base}{CAS_LOGIN}",
+        params={"service": portal_callback},
         allow_redirects=True,
         timeout=20,
     )
 
-    user = verify_session(session)
+    user = verify_session(session, cfg)
     if not user:
         raise SsoError("登录接口报成功，但门户会话没建立起来。学校可能改了回调流程。")
 
@@ -235,7 +235,7 @@ def ensure_session(cfg: config.Config) -> requests.Session:
     而不是抛一个看不懂的错误。
     """
     session = load_session(cfg.session_path)
-    if session and verify_session(session):
+    if session and verify_session(session, cfg):
         return session
 
     log.info("会话不可用，尝试重新登录")

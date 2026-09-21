@@ -47,6 +47,26 @@ def _setup_logging(verbose: bool) -> None:
 def cmd_setup(args: argparse.Namespace) -> int:
     cfg = config.load()
 
+    print("=== 学校网站配置 ===")
+    print("（金智教务管理系统，通常形如 sso.xxx.edu.cn 和 all.xxx.edu.cn）")
+
+    sso_base = input(f"统一认证地址（SSO）[{cfg.sso_base}]：").strip() or cfg.sso_base
+    if not sso_base:
+        print("SSO 地址不能为空，示例：https://sso.example.edu.cn", file=sys.stderr)
+        return 1
+    if not sso_base.startswith("http"):
+        sso_base = f"https://{sso_base}"
+    cfg.sso_base = sso_base
+
+    portal_base = input(f"门户地址（网上办事大厅）[{cfg.portal_base}]：").strip() or cfg.portal_base
+    if not portal_base:
+        print("门户地址不能为空，示例：https://all.example.edu.cn", file=sys.stderr)
+        return 1
+    if not portal_base.startswith("http"):
+        portal_base = f"https://{portal_base}"
+    cfg.portal_base = portal_base
+
+    print("\n=== 账号凭据 ===")
     username = input(f"统一认证账号（学号）[{cfg.sso_username}]：").strip() or cfg.sso_username
     if not username:
         print("账号不能为空", file=sys.stderr)
@@ -59,7 +79,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         config.set_sso_password(username, password)
         print("已存入 Keychain")
 
-    apple_id = input(f"Apple ID [{cfg.calendar.apple_id}]：").strip() or cfg.calendar.apple_id
+    apple_id = input(f"\nApple ID [{cfg.calendar.apple_id}]：").strip() or cfg.calendar.apple_id
     if apple_id:
         cfg.calendar.apple_id = apple_id
         print("Apple 应用专用密码请到 appleid.apple.com 生成（不是账户密码）")
@@ -77,7 +97,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     config.save(cfg)
     config.ensure_var_dirs(cfg)
-    print(f"配置已写入 {config.CONFIG_PATH}")
+    print(f"\n配置已写入 {config.CONFIG_PATH}")
     return 0
 
 
@@ -146,9 +166,9 @@ def _manual_login(cfg: config.Config, args: argparse.Namespace) -> int:
         print(f"会话导入成功：{_user_display_name(user)}")
         return 0
 
-    print(browser_login.INSTRUCTIONS)
+    print(browser_login.get_instructions(cfg))
     try:
-        browser_login.open_login_page()
+        browser_login.open_login_page(cfg)
     except browser_login.ManualLoginError as exc:
         print(f"{exc}", file=sys.stderr)
 

@@ -51,12 +51,12 @@ class PortalClient:
     # ---------- 底层请求 ----------
 
     def _post(self, path: str, payload: dict | None = None) -> Any:
-        url = f"{config.PORTAL_BASE}{path}"
+        url = f"{self.cfg.portal_base}{path}"
         resp = self.session.post(url, json=payload or {}, timeout=20)
         return self._unwrap(resp, path)
 
     def _get(self, path: str, params: dict | None = None) -> Any:
-        url = f"{config.PORTAL_BASE}{path}"
+        url = f"{self.cfg.portal_base}{path}"
         resp = self.session.get(url, params=params, timeout=20)
         return self._unwrap(resp, path)
 

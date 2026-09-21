@@ -18,8 +18,6 @@ from . import config, sso
 
 log = logging.getLogger(__name__)
 
-LOGIN_URL = f"{config.SSO_BASE}/esc-sso/login?service={config.PORTAL_BASE}/login"
-
 # 轮询间隔与上限：留足时间让人慢慢输密码、拖滑块
 POLL_INTERVAL_S = 2.0
 DEFAULT_TIMEOUT_S = 300
@@ -88,8 +86,9 @@ def assisted_login(
         context = browser.new_context(**context_args)
         page = context.new_page()
 
+        login_url = f"{cfg.sso_base}/esc-sso/login?service={cfg.portal_base}/login"
         try:
-            page.goto(LOGIN_URL, timeout=60_000)
+            page.goto(login_url, timeout=60_000)
         except Exception as exc:
             browser.close()
             raise AssistedLoginError(f"打不开登录页：{exc}") from exc
@@ -102,7 +101,7 @@ def assisted_login(
             except Exception:
                 pass
 
-    user = sso.verify_session(session)
+    user = sso.verify_session(session, cfg)
     if not user:
         raise AssistedLoginError(
             "取到了 cookie 但会话无效。可能登录没真正完成，或会话被服务端立刻失效了。"

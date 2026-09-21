@@ -21,9 +21,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "config.toml"
 VAR_DIR = PROJECT_ROOT / "var"
 
-SSO_BASE = "https://sso.example.edu.cn"
-PORTAL_BASE = "https://all.example.edu.cn"
-
 # 只走移动端展示方案：桌面端漏课且只给节次号，移动端才有具体时间。
 MOBILE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
@@ -68,6 +65,8 @@ class CalendarConfig:
 @dataclass
 class Config:
     sso_username: str = ""
+    sso_base: str = ""      # 统一认证地址，如 https://sso.example.edu.cn
+    portal_base: str = ""   # 门户地址，如 https://all.example.edu.cn
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     calendar: CalendarConfig = field(default_factory=CalendarConfig)
 
@@ -101,6 +100,8 @@ def load() -> Config:
 
     return Config(
         sso_username=sso.get("username", ""),
+        sso_base=sso.get("base", ""),
+        portal_base=raw.get("portal_base", ""),
         schedule=ScheduleConfig(
             card_wid=sched.get("card_wid", ""),
             card_id=sched.get("card_id", ""),
@@ -120,7 +121,11 @@ def load() -> Config:
 def save(cfg: Config) -> None:
     """写回 config.toml。只含非敏感项，凭据永不落盘。"""
     payload = {
-        "sso": {"username": cfg.sso_username},
+        "sso": {
+            "username": cfg.sso_username,
+            "base": cfg.sso_base,
+        },
+        "portal_base": cfg.portal_base,
         "schedule": {
             "card_wid": cfg.schedule.card_wid,
             "card_id": cfg.schedule.card_id,

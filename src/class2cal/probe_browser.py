@@ -41,6 +41,10 @@ def _session_cookies_for_playwright(cfg: config.Config) -> list[dict]:
     except (json.JSONDecodeError, OSError) as exc:
         raise AutoProbeError(f"会话文件读不出来：{exc}") from exc
 
+    # 从配置提取门户域名
+    from urllib.parse import urlparse
+    portal_domain = urlparse(cfg.portal_base).netloc
+
     out: list[dict] = []
     for c in raw:
         name, value = c.get("name"), c.get("value")
@@ -50,7 +54,7 @@ def _session_cookies_for_playwright(cfg: config.Config) -> list[dict]:
             {
                 "name": name,
                 "value": value,
-                "domain": str(c.get("domain") or "all.example.edu.cn").lstrip("."),
+                "domain": str(c.get("domain") or portal_domain).lstrip("."),
                 "path": c.get("path", "/"),
             }
         )
@@ -95,11 +99,15 @@ def probe_with_browser(
         )
         context.add_cookies(cookies)
 
+        # 从配置提取门户域名，用于过滤请求
+        from urllib.parse import urlparse
+        portal_domain = urlparse(cfg.portal_base).netloc
+
         def on_response(response):
             """记下所有可能带数据的响应。"""
             try:
                 url = response.url
-                if "example.edu.cn" not in url:
+                if portal_domain not in url:
                     return
                 ctype = (response.headers or {}).get("content-type", "")
                 if "json" not in ctype.lower():
@@ -127,7 +135,7 @@ def probe_with_browser(
 
         page = context.new_page()
         try:
-            page.goto(f"{config.PORTAL_BASE}/index.html", timeout=60_000)
+            page.goto(f"{cfg.portal_base}/index.html", timeout=60_000)
         except Exception as exc:
             browser.close()
             raise AutoProbeError(f"打不开门户首页：{exc}") from exc

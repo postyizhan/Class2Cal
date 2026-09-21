@@ -4,6 +4,21 @@
 
 学校分批排课、还会调课、撤课，所以这不是一次性导入，而是**可以反复跑的增量同步** — 学校调整什么，日历就跟着变什么，你手动加的事件不会被动。
 
+## 适用范围
+
+本工具适用于使用**金智教务管理系统**（金智教育 Wisedu）的高校。该系统特征：
+- 统一认证地址通常为 `sso.xxx.edu.cn`（金智 esc-sso v3）
+- 门户地址通常为 `all.xxx.edu.cn`（网上办事服务大厅）
+- 登录时可能需要拖动滑块验证码
+
+如果你的学校使用其他教务系统，本工具可能无法直接使用。
+
+## 支持的系统
+
+- **操作系统**：macOS（依赖 macOS Keychain 存储凭据）
+- **Python 版本**：3.10+
+- **浏览器**：Microsoft Edge 或 Google Chrome（用于辅助登录和接口探测）
+
 ## 特性
 
 - ✅ **真实时间，不是节次** — 直接用移动端接口给的具体时刻（08:20-09:45），而非「第 1-2 节」
@@ -47,14 +62,23 @@ pip install -e .
 ### 1. 初次配置
 
 ```bash
-# 存凭据（学号、统一认证密码、Apple 专用密码）
+# 存凭据（学校域名、学号、密码、Apple 专用密码）
 class2cal setup
-
-# 验证统一认证能登上
-class2cal login --browser
 ```
 
+配置时需要输入：
+- **统一认证地址（SSO）**：如 `https://sso.example.edu.cn`
+- **门户地址**：如 `https://all.example.edu.cn`
+- **学号**和**统一认证密码**
+- **Apple ID** 和 **Apple 专用密码**
+
 **Apple 专用密码**不是你的 Apple ID 账户密码，而是到 [appleid.apple.com](https://appleid.apple.com) → 登录与安全 → App 专用密码 生成的 16 位密码（格式 `xxxx-xxxx-xxxx-xxxx`）。
+
+配置完成后验证登录：
+
+```bash
+class2cal login --browser
+```
 
 ### 2. 探测课表接口
 
