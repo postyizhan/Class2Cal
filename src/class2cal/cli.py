@@ -19,7 +19,16 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import assisted_login, browser_login, calendar_sync, config, portal, schedule, sso
+from . import (
+    assisted_login,
+    browser_login,
+    calendar_sync,
+    config,
+    portal,
+    probe_browser,
+    schedule,
+    sso,
+)
 from .state import SyncState
 
 log = logging.getLogger("class2cal")
@@ -163,9 +172,72 @@ def _manual_login(cfg: config.Config, args: argparse.Namespace) -> int:
 # ---------- probe ----------
 
 
+def _probe_browser(cfg: config.Config, args: argparse.Namespace) -> int:
+    """浏览器抓包：你点进课表页，工具把接口抓出来。"""
+    try:
+        result = probe_browser.probe_with_browser(
+            cfg, timeout_s=args.timeout, channel=args.channel
+        )
+    except probe_browser.AutoProbeError as exc:
+        print(f"探测失败：{exc}", file=sys.stderr)
+        return 1
+
+    print(f"共记录 {result['captured']} 条 JSON 请求，存档在 {result['dump']}")
+    candidates = result["candidates"]
+
+    if not candidates:
+        print(
+            "\n没识别出课表接口。可能是没点进课表页，或者课表数据不走 JSON 接口。\n"
+            f"抓到的请求都在 {result['dump']}，可以翻一下确认。",
+            file=sys.stderr,
+        )
+        return 4
+
+    print(f"\n找到 {len(candidates)} 个候选接口（按可能性排序）：")
+    for i, c in enumerate(candidates, 1):
+        coord = ""
+        if c.get("card_wid"):
+            coord = f"  wid={c['card_wid']} id={c['card_id']}"
+        print(f"  [{i}] {c['url'][:95]}{coord}")
+        print(f"      命中信号：{'、'.join(c['signals']) or '(无)'}  得分 {c['score']}")
+
+    pickable = [c for c in candidates if c.get("card_wid")]
+    if args.pick:
+        idx = args.pick - 1
+        if not 0 <= idx < len(candidates):
+            print(f"编号超范围（1-{len(candidates)}）", file=sys.stderr)
+            return 1
+        chosen = candidates[idx]
+        if not chosen.get("card_wid"):
+            print(
+                f"\n[{args.pick}] 不是 execCardMethod 接口，没有卡片坐标可写。\n"
+                "把这条的 URL 和响应发我，我来适配。",
+                file=sys.stderr,
+            )
+            return 1
+        cfg.schedule.card_wid = chosen["card_wid"]
+        cfg.schedule.card_id = chosen["card_id"]
+        config.save(cfg)
+        print(f"\n已写入 config.toml：wid={chosen['card_wid']} id={chosen['card_id']}")
+        print("接着跑 `class2cal fetch` 验证能不能取到课。")
+    elif pickable:
+        print("\n确认哪个是课表后，跑 `class2cal probe --browser --pick N` 写入配置。")
+        print("（也可以直接把上面的输出发我，我帮你判断）")
+    else:
+        print(
+            "\n候选里没有 execCardMethod 形式的接口，课表可能走了别的接口。\n"
+            f"把 {result['dump']} 里相关的请求发我，我来适配。"
+        )
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     cfg = config.load()
     config.ensure_var_dirs(cfg)
+
+    if args.browser:
+        return _probe_browser(cfg, args)
+
     try:
         session = sso.ensure_session(cfg)
     except (sso.SsoError, config.ConfigError) as exc:
@@ -178,10 +250,9 @@ def cmd_probe(args: argparse.Namespace) -> int:
     print(f"门户结构已存档到 {cfg.probe_dir}")
     if not candidates:
         print(
-            "没自动识别出课表卡片。接下来这样做：\n"
-            f"  1. 翻一下 {cfg.probe_dir}/*.json，搜「课」字找卡片的 cardWid / cardId\n"
-            "  2. 或用 Edge 开 iPhone 设备模拟登录课表页，在 Network 面板找 execCardMethod 请求\n"
-            "  3. 把找到的坐标填进 config.toml 的 [schedule] card_wid / card_id",
+            "接口枚举没找到课表卡片（本校门户没买 personalized 模板，清单接口取不到）。\n"
+            "改用浏览器抓包，你只要点进课表页就行：\n"
+            "    class2cal probe --browser",
             file=sys.stderr,
         )
         return 4
@@ -425,7 +496,19 @@ def build_parser() -> argparse.ArgumentParser:
     sl.set_defaults(func=cmd_login)
 
     sp = sub.add_parser("probe", help="探测课表卡片坐标")
+    sp.add_argument(
+        "--browser",
+        action="store_true",
+        help="推荐：开浏览器让你点进课表页，工具自动抓出接口",
+    )
     sp.add_argument("--pick", type=int, metavar="N", help="选定第 N 个候选并写入配置")
+    sp.add_argument("--channel", default="msedge", help="浏览器渠道，默认 msedge")
+    sp.add_argument(
+        "--timeout",
+        type=int,
+        default=probe_browser.DEFAULT_TIMEOUT_S,
+        help="等待你操作的秒数，默认 300",
+    )
     sp.set_defaults(func=cmd_probe)
 
     sf = sub.add_parser("fetch", help="抓取并打印课表，不写日历")
