@@ -13,8 +13,6 @@ from typing import Any
 import keyring
 import tomli_w
 
-from . import timetable
-
 # Keychain 服务名。统一认证与 Apple 专用密码分开存，避免互相覆盖。
 KEYRING_SERVICE_SSO = "class2cal.sso"
 KEYRING_SERVICE_APPLE = "class2cal.apple"
@@ -49,12 +47,8 @@ class ScheduleConfig:
     cal_name: str = "我的课表"
     # 抓取窗口：当前周 + 后 N 周。学校分批排课，窗口往前铺就能自然接住后续批次。
     weeks_ahead: int = 4
-    # 移动端返回的字段名，probe 后按真实样本填。
-    field_map: dict[str, str] = field(default_factory=dict)
-    # 节次 -> [开始, 结束]。默认取武进校区作息表，仅当某条记录没给具体时间时兜底。
-    period_times: dict[str, list[str]] = field(
-        default_factory=timetable.default_period_times
-    )
+    # 课表接口入参的覆盖项，学校改字段时用，见 portal._build_schedule_payload。
+    field_map: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_probed(self) -> bool:
@@ -114,8 +108,6 @@ def load() -> Config:
             cal_name=sched.get("cal_name", "我的课表"),
             weeks_ahead=sched.get("weeks_ahead", 4),
             field_map=sched.get("field_map", {}),
-            # 配置里没写就用内置作息表，别覆盖成空字典
-            period_times=sched.get("period_times") or timetable.default_period_times(),
         ),
         calendar=CalendarConfig(
             apple_id=cal.get("apple_id", ""),
@@ -136,7 +128,6 @@ def save(cfg: Config) -> None:
             "cal_name": cfg.schedule.cal_name,
             "weeks_ahead": cfg.schedule.weeks_ahead,
             "field_map": cfg.schedule.field_map,
-            "period_times": cfg.schedule.period_times,
         },
         "calendar": {
             "apple_id": cfg.calendar.apple_id,

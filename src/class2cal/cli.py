@@ -219,7 +219,7 @@ def _probe_browser(cfg: config.Config, args: argparse.Namespace) -> int:
         cfg.schedule.card_id = chosen["card_id"]
         config.save(cfg)
         print(f"\n已写入 config.toml：wid={chosen['card_wid']} id={chosen['card_id']}")
-        print("接着跑 `class2cal fetch` 验证能不能取到课。")
+        print("接着跑 `class2cal calendars` 确认哪个日历是课表。")
     elif pickable:
         print("\n确认哪个是课表后，跑 `class2cal probe --browser --pick N` 写入配置。")
         print("（也可以直接把上面的输出发我，我帮你判断）")
@@ -271,9 +271,60 @@ def cmd_probe(args: argparse.Namespace) -> int:
         cfg.schedule.card_id = chosen["card_id"]
         config.save(cfg)
         print(f"\n已把 [{args.pick}] {chosen['label']} 写入 config.toml")
-        print("接着跑 `class2cal fetch` 验证能不能取到课。")
+        print("接着跑 `class2cal calendars` 确认哪个日历是课表。")
     else:
         print("\n确认哪个是课表后，跑 `class2cal probe --pick N` 写入配置。")
+    return 0
+
+
+# ---------- calendars ----------
+
+
+def cmd_calendars(args: argparse.Namespace) -> int:
+    """列出门户里的日历，确认哪个是课表。
+
+    同一张日历卡片里混着「假期」等别的日历，不过滤会把假期一起导进 Apple 日历。
+    响应里的 isLessonTable 字段靠不住（「假期」标 1，「我的课表」反而标 0），
+    所以这步交给人确认，不自动挑。
+    """
+    cfg = config.load()
+    config.ensure_var_dirs(cfg)
+
+    try:
+        session = sso.ensure_session(cfg)
+        cals = portal.PortalClient(session, cfg).fetch_calendars()
+    except (sso.SsoError, portal.PortalError, config.ConfigError) as exc:
+        print(f"取日历清单失败：{exc}", file=sys.stderr)
+        return 1
+
+    items = [c for c in (cals or []) if isinstance(c, dict) and c.get("wid")]
+    if not items:
+        print("没取到任何日历。先确认 `class2cal probe` 已探明卡片坐标。", file=sys.stderr)
+        return 4
+
+    print(f"门户里共 {len(items)} 个日历：")
+    for i, c in enumerate(items, 1):
+        current = "  ← 当前配置" if str(c["wid"]) == cfg.schedule.cal_wid else ""
+        print(f"  [{i}] {c.get('calName') or '(无名)'}  wid={c['wid']}{current}")
+        if c.get("calDesc"):
+            print(f"      {c['calDesc']}")
+
+    if not args.pick:
+        print("\n确认哪个是课表后，跑 `class2cal calendars --pick N` 写入配置。")
+        print("（课表一般叫「我的课表」，描述里会提教务系统；「假期」那个不是课）")
+        return 0
+
+    idx = args.pick - 1
+    if not 0 <= idx < len(items):
+        print(f"编号超范围（1-{len(items)}）", file=sys.stderr)
+        return 1
+
+    chosen = items[idx]
+    cfg.schedule.cal_wid = str(chosen["wid"])
+    cfg.schedule.cal_name = str(chosen.get("calName") or "")
+    config.save(cfg)
+    print(f"\n已写入 config.toml：cal_wid={cfg.schedule.cal_wid}（{cfg.schedule.cal_name}）")
+    print("接着跑 `class2cal fetch` 验证抓到的课对不对。")
     return 0
 
 
@@ -355,7 +406,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                     "course": le.course,
                     "room": le.room,
                     "teacher": le.teacher,
-                    "source": le.source,
+                    "periods": le.periods,
                     "uid": le.uid,
                 }
                 for le in v
@@ -516,6 +567,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="等待你操作的秒数，默认 300",
     )
     sp.set_defaults(func=cmd_probe)
+
+    sc = sub.add_parser("calendars", help="列出门户日历，确认哪个是课表")
+    sc.add_argument("--pick", type=int, metavar="N", help="选定第 N 个并写入配置")
+    sc.set_defaults(func=cmd_calendars)
 
     sf = sub.add_parser("fetch", help="抓取并打印课表，不写日历")
     sf.add_argument("--weeks", type=int, help="抓取周数（含当前周）")
