@@ -1,0 +1,15 @@
+# 会话 cookie、同步状态、抓取存档、日志 —— 含凭据性内容，一律不入库
+var/
+
+# 含学号、Apple ID 等个人标识，不入库。参考 config.example.toml
+config.toml
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+
+.DS_Store

@@ -1,0 +1,29 @@
+# 复制为 config.toml 后按实际情况填写，或直接跑 `class2cal setup` 交互生成。
+# 密码不在这里 —— 统一认证密码和 Apple 应用专用密码都只存 macOS Keychain。
+
+[sso]
+# 统一认证账号（学号）
+username = "20240001"
+
+[schedule]
+# 课表卡片坐标。未登录状态拿不到，跑 `class2cal probe` 探明后自动写入。
+card_wid = ""
+card_id = ""
+# 抓取窗口：当前周 + 后 N 周。学校分批排课，窗口往前铺就能接住后续批次。
+weeks_ahead = 4
+
+# 课表接口的入参字段名，probe 拿到真实样本后按需填。
+[schedule.field_map]
+# start_date = "startDate"
+# end_date = "endDate"
+
+# 节次 -> [开始, 结束]。留空则用内置的武进校区作息表（见 timetable.py）。
+# 仅当某条记录只给了节次号、没给具体时间时才会用到。
+[schedule.period_times]
+
+[calendar]
+# iCloud 账号（Mac 上登录的那个 Apple ID）
+apple_id = "you@example.com"
+# 目标日历名。工具只动自己打了 c2c. UID 前缀的事件，不碰你手录的。
+calendar_name = "学校课程"
+caldav_url = "https://caldav.icloud.com"

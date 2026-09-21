@@ -1,0 +1,31 @@
+[project]
+name = "class2cal"
+version = "0.1.0"
+description = "把学校课表同步到 Apple 日历"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.32.0",
+    "cryptography>=43.0.0",
+    "caldav>=1.3.9",
+    "icalendar>=6.0.0",
+    "keyring>=25.0.0",
+    "tomli-w>=1.0.0",
+    "playwright>=1.63.0",
+]
+
+[project.scripts]
+class2cal = "class2cal.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/class2cal"]
+
+[dependency-groups]
+dev = ["pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
