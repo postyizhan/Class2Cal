@@ -30,7 +30,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/你的用户名/Class2Cal.git
+git clone https://github.com/postyizhan/Class2Cal.git
 cd Class2Cal
 
 # 安装依赖（uv 会自动创建虚拟环境）
