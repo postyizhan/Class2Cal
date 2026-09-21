@@ -283,34 +283,40 @@ def cmd_probe(args: argparse.Namespace) -> int:
 def _fetch_weekly(
     cfg: config.Config, weeks_ahead: int
 ) -> tuple[dict[date, list[schedule.Lesson]], list[date]]:
-    """按周抓取。返回 (成功的周 -> 课程列表, 失败的周)。
+    """抓取课表。返回 (周一 -> 课程列表, 失败的周)。
 
-    失败的周不进结果字典 —— 这是安全闸 2：只有抓取成功的周才参与对账。
+    接口接受任意时间范围，所以整个窗口一次请求就够，不必逐周调用。
+
+    关键：窗口内每一周都要出现在结果字典里（没课的周是空列表）。这是安全闸 1
+    生效的前提 —— 只有「这周在结果里但列表为空」才能和「这周没抓到」区分开：
+    前者是学校撤课，后者要跳过不动。
     """
     session = sso.ensure_session(cfg)
     client = portal.PortalClient(session, cfg)
 
+    mondays = list(schedule.iter_week_starts(date.today(), weeks_ahead))
+    win_start, win_end = mondays[0], schedule.week_range(mondays[-1])[1]
+
+    try:
+        raw = client.fetch_schedule(win_start, win_end, archive_dir=cfg.raw_dir)
+    except portal.CardNotFound:
+        raise
+    except portal.PortalError as exc:
+        # 整段抓取失败 —— 所有周都算未抓取，一律不参与对账
+        log.warning("抓取 %s ~ %s 失败：%s", win_start, win_end, exc)
+        return {}, mondays
+
+    lessons = schedule.parse_lessons(
+        raw, cal_name=cfg.schedule.cal_name, cal_wid=cfg.schedule.cal_wid
+    )
+    grouped = schedule.group_by_week(lessons)
+
     weekly: dict[date, list[schedule.Lesson]] = {}
-    failed: list[date] = []
-
-    for monday in schedule.iter_week_starts(date.today(), weeks_ahead):
+    for monday in mondays:
         start, end = schedule.week_range(monday)
-        try:
-            raw = client.fetch_schedule(start, end, archive_dir=cfg.raw_dir)
-        except portal.CardNotFound:
-            raise
-        except portal.PortalError as exc:
-            log.warning("抓取 %s ~ %s 失败：%s", start, end, exc)
-            failed.append(monday)
-            continue
+        weekly[monday] = [le for le in grouped.get(monday, []) if start <= le.date <= end]
 
-        lessons = schedule.parse_lessons(
-            raw, period_times=cfg.schedule.period_times
-        )
-        # 只保留落在本周窗口内的课，避免接口返回超范围数据污染对账
-        weekly[monday] = [le for le in lessons if start <= le.date <= end]
-
-    return weekly, failed
+    return weekly, []
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
@@ -330,10 +336,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         lessons = weekly[monday]
         print(f"\n{start} ~ {end}（{len(lessons)} 节）")
         for le in lessons:
-            mark = " [时间推算]" if le.source == "period" else ""
+            periods = f" [{le.periods}节]" if le.periods else ""
             room = f" @{le.room}" if le.room else ""
             teacher = f" {le.teacher}" if le.teacher else ""
-            print(f"  {le.date} {le.start}-{le.end}  {le.course}{room}{teacher}{mark}")
+            print(f"  {le.date} {le.start}-{le.end}  {le.course}{room}{teacher}{periods}")
 
     print(f"\n共 {total} 节课，覆盖 {len(weekly)} 周")
     if failed:

@@ -141,12 +141,17 @@ class PortalClient:
     # ---------- fetch：取课表 ----------
 
     def fetch_schedule(self, start: date, end: date, archive_dir: Path | None = None) -> Any:
-        """取 [start, end] 区间的课表原始数据。"""
+        """取 [start, end] 区间的课表原始数据。
+
+        接口接受任意时间范围，一次就能拉完整个抓取窗口，不必逐周请求。
+        """
         sched = self.cfg.schedule
         if not sched.is_probed:
             raise CardNotFound("还没探明课表卡片坐标，先跑 `class2cal probe`。")
 
-        payload = _build_schedule_payload(start, end, sched.field_map)
+        payload = _build_schedule_payload(
+            sched.card_wid, sched.card_id, start, end, sched.field_map
+        )
         data = self.exec_card_method(sched.card_wid, sched.card_id, payload)
 
         if archive_dir is not None:
@@ -157,22 +162,60 @@ class PortalClient:
             )
         return data
 
+    def fetch_calendars(self) -> Any:
+        """取用户订阅的日历清单。
 
-def _build_schedule_payload(start: date, end: date, field_map: dict[str, Any]) -> dict:
+        用于确认「我的课表」的 calWid —— 按 wid 过滤比按名字可靠。
+        """
+        sched = self.cfg.schedule
+        if not sched.is_probed:
+            raise CardNotFound("还没探明课表卡片坐标，先跑 `class2cal probe`。")
+
+        return self.exec_card_method(
+            sched.card_wid,
+            sched.card_id,
+            {
+                "cardId": sched.card_id,
+                "cardWid": sched.card_wid,
+                "method": "getPermissionCalV2",
+                "param": {"lang": "zh_CN"},
+            },
+        )
+
+
+def _build_schedule_payload(
+    card_wid: str,
+    card_id: str,
+    start: date,
+    end: date,
+    field_map: dict[str, Any] | None = None,
+) -> dict:
     """构造课表查询载荷。
 
-    金智卡片的入参字段名各校不同，probe 后写进 config 的 field_map。
-    未配置时给一组常见默认名。
+    结构由抓包确认（日历卡片的 renderData 方法）：
+        {"cardId": ..., "cardWid": ..., "method": "renderData",
+         "param": {"startTime": "2026-08-31 00:00:00",
+                   "endTime":   "2026-10-11 23:59:59",
+                   "selectDate": "2026-09-21", "lang": "zh_CN"}}
+
+    时间要 "YYYY-MM-DD HH:MM:SS" 格式，起止各自补到整天两端。
     """
-    start_key = field_map.get("start_date", "startDate")
-    end_key = field_map.get("end_date", "endDate")
-    payload: dict[str, Any] = {
-        start_key: start.isoformat(),
-        end_key: end.isoformat(),
+    param: dict[str, Any] = {
+        "startTime": f"{start.isoformat()} 00:00:00",
+        "endTime": f"{end.isoformat()} 23:59:59",
+        "selectDate": start.isoformat(),
+        "cardWidOrigin": card_wid,
+        "lang": "zh_CN",
     }
-    # 额外入参（如 semester、xnxq）由 probe 阶段写入
-    payload.update(field_map.get("extra_params") or {})
-    return payload
+    # 学校改字段时可从 config 覆盖，不用改代码
+    param.update((field_map or {}).get("extra_params") or {})
+
+    return {
+        "cardId": card_id,
+        "cardWid": card_wid,
+        "method": "renderData",
+        "param": param,
+    }
 
 
 def _find_card_candidates(node: Any, path: str = "") -> list[dict]:

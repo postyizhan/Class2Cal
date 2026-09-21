@@ -115,8 +115,8 @@ def build_event(lesson: Lesson) -> bytes:
     notes = []
     if lesson.teacher:
         notes.append(f"教师：{lesson.teacher}")
-    if lesson.source == "period":
-        notes.append("（时间由节次推算，请核对）")
+    if lesson.periods:
+        notes.append(f"节次：{lesson.periods}")
     if notes:
         ev.add("description", "\n".join(notes))
 

@@ -43,6 +43,10 @@ class ScheduleConfig:
 
     card_wid: str = ""
     card_id: str = ""
+    # 课表所在日历的 wid。同一张卡片里还有「假期」等其他日历，必须过滤，
+    # 否则假期和自建日程会被一起导进来。按 wid 比按名字可靠。
+    cal_wid: str = ""
+    cal_name: str = "我的课表"
     # 抓取窗口：当前周 + 后 N 周。学校分批排课，窗口往前铺就能自然接住后续批次。
     weeks_ahead: int = 4
     # 移动端返回的字段名，probe 后按真实样本填。
@@ -106,6 +110,8 @@ def load() -> Config:
         schedule=ScheduleConfig(
             card_wid=sched.get("card_wid", ""),
             card_id=sched.get("card_id", ""),
+            cal_wid=sched.get("cal_wid", ""),
+            cal_name=sched.get("cal_name", "我的课表"),
             weeks_ahead=sched.get("weeks_ahead", 4),
             field_map=sched.get("field_map", {}),
             # 配置里没写就用内置作息表，别覆盖成空字典
@@ -126,6 +132,8 @@ def save(cfg: Config) -> None:
         "schedule": {
             "card_wid": cfg.schedule.card_wid,
             "card_id": cfg.schedule.card_id,
+            "cal_wid": cfg.schedule.cal_wid,
+            "cal_name": cfg.schedule.cal_name,
             "weeks_ahead": cfg.schedule.weeks_ahead,
             "field_map": cfg.schedule.field_map,
             "period_times": cfg.schedule.period_times,

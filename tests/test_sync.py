@@ -300,11 +300,11 @@ def test_build_event_has_no_alarm():
     assert "张老师" in ical
 
 
-def test_build_event_marks_estimated_time():
-    """节次推算出来的时间要在备注里提醒用户核对。"""
-    le = Lesson(MONDAY, "15:25", "16:55", "计算机应用基础", source="period")
+def test_build_event_includes_periods():
+    """节次信息写进备注，方便和学校作息表对照。"""
+    le = Lesson(MONDAY, "15:25", "16:50", "计算机应用基础", periods="7-8")
     ical = build_event(le).decode("utf-8")
-    assert "推算" in ical
+    assert "7-8" in ical
 
 
 def test_build_event_uid_matches_lesson():

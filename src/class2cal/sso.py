@@ -195,6 +195,11 @@ def login(cfg: config.Config) -> requests.Session:
     return session
 
 
+# 这些值出现在 msg 里表示「没有错误」，不能当成错误消息往外抛，
+# 否则会打印出「登录失败：success」这种自相矛盾的话。
+_SUCCESS_WORDS = ("success", "成功", "ok", "0")
+
+
 def _raise_for_login_error(body: dict) -> None:
     """把 doLogin 的失败分类，别笼统报错。"""
     err = body.get("err") or body.get("error")
@@ -209,7 +214,7 @@ def _raise_for_login_error(body: dict) -> None:
         or body.get("msg")
         or err
         or ""
-    )
+    ).strip()
     lowered = msg.lower()
 
     if any(k in msg for k in ("密码", "用户名", "账号")) or "credential" in lowered:
@@ -218,9 +223,9 @@ def _raise_for_login_error(body: dict) -> None:
         raise CaptchaRequired(f"需要验证码：{msg}")
     if any(k in msg for k in ("锁定", "冻结", "停用")):
         raise SsoError(f"账号被锁定或停用：{msg}")
-    if msg:
+    if msg and lowered not in _SUCCESS_WORDS:
         raise SsoError(f"登录失败：{msg}")
-    # 没有明确成功标志也没有错误信息，交给上层的会话校验兜底。
+    # 无错误信息（或只是成功标志）时交给上层的会话校验兜底。
 
 
 def ensure_session(cfg: config.Config) -> requests.Session:
@@ -234,9 +239,15 @@ def ensure_session(cfg: config.Config) -> requests.Session:
         return session
 
     log.info("会话不可用，尝试重新登录")
+    relogin_hint = (
+        "会话已过期，需要重新登录一次：\n"
+        "    class2cal login --browser\n"
+        "（学校强制滑块验证码，账密无法静默重登 —— 浏览器里拖一下滑块即可）"
+    )
     try:
         return login(cfg)
     except CaptchaRequired as exc:
-        raise CaptchaRequired(
-            f"{exc}\n会话已过期且无法自动重登。跑 `class2cal login --manual` 重新登录一次。"
-        ) from exc
+        raise CaptchaRequired(f"{exc}\n\n{relogin_hint}") from exc
+    except SsoError as exc:
+        # 自动重登失败的原因多半就是滑块，别把底层报错原样丢给用户
+        raise SsoError(f"{exc}\n\n{relogin_hint}") from exc
