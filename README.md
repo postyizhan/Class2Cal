@@ -111,7 +111,14 @@ class2cal probe --browser
 class2cal probe --browser --pick 1
 ```
 
-**如果自动识别没找到课表**，把输出和 `var/probe/network.json` 一起发我，我帮你看（或手工填进 `config.toml` 的 `[schedule]` 也行）。
+**如果自动识别没找到课表**，可以查看 `var/probe/network.json` 中的完整请求记录，手动找到课表接口后填写到 `config.toml` 的 `[schedule]` 部分：
+
+```toml
+[schedule]
+card_wid = "课表卡片的 wid"
+card_id = "课表卡片的 id"
+cal_wid = "课表日历的 wid（可选，用于过滤）"
+```
 
 ### 3. 验证抓取
 
