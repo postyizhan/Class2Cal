@@ -94,7 +94,7 @@ def assisted_login(
             raise AssistedLoginError(f"打不开登录页：{exc}") from exc
 
         try:
-            session = _wait_for_login(page, context, timeout_s)
+            session = _wait_for_login(page, context, timeout_s, cfg)
         finally:
             try:
                 browser.close()
@@ -112,7 +112,7 @@ def assisted_login(
     return user
 
 
-def _wait_for_login(page, context, timeout_s: int):
+def _wait_for_login(page, context, timeout_s: int, cfg: config.Config):
     """轮询等待门户会话建立。
 
     判定依据是拿 cookie 去问门户的 /getLoginUser —— 比看 URL 可靠，
@@ -132,7 +132,7 @@ def _wait_for_login(page, context, timeout_s: int):
 
         if cookies:
             session = _cookies_to_session(cookies)
-            if sso.verify_session(session):
+            if sso.verify_session(session, cfg):
                 print("检测到登录成功，正在取回会话……")
                 return session
 
