@@ -151,7 +151,7 @@ def cmd_login(args: argparse.Namespace) -> int:
         print(f"登录失败：{exc}", file=sys.stderr)
         return 1
 
-    print(f"登录成功：{_user_display_name(sso.verify_session(session) or {})}")
+    print(f"登录成功：{_user_display_name(sso.verify_session(session, cfg) or {})}")
     return 0
 
 
@@ -519,7 +519,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"抓取窗口      当前周 + 后 {cfg.schedule.weeks_ahead} 周")
 
     session = sso.load_session(cfg.session_path)
-    alive = bool(session and sso.verify_session(session))
+    alive = bool(session and sso.verify_session(session, cfg))
     print(f"会话状态      {'有效' if alive else '无效/不存在'}")
 
     if st.weeks:
