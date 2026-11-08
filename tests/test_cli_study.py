@@ -245,6 +245,27 @@ def test_preview_reports_partial_failure(cfg_path, monkeypatch, capsys):
     assert "没抓到课表" in capsys.readouterr().out
 
 
+def test_preview_prints_skip_reason(cfg_path, monkeypatch, capsys):
+    """周日被正课顶掉时，preview 要直说原因，不能只默默少一条。"""
+    from class2cal.schedule import Lesson
+
+    cfg_path.write_text(
+        '[study]\nenabled = true\ndays = ["mon", "sun"]\nstart = "19:00"\nend = "21:30"\n',
+        encoding="utf-8",
+    )
+    monday = date(2026, 11, 2)
+    sunday = date(2026, 11, 8)
+    monkeypatch.setattr(
+        cli,
+        "_fetch_weekly",
+        lambda cfg, weeks: ({monday: [Lesson(sunday, "19:00", "20:00", "晚点名")]}, []),
+    )
+
+    assert run("study", "preview", "--weeks", "1") == 0
+    out = capsys.readouterr().out
+    assert "没排" in out and "晚点名" in out
+
+
 # ---------- 配置层的边界（TOML 原文形态） ----------
 
 

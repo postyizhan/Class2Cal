@@ -127,6 +127,54 @@ class StudySlot:
             )
         return out
 
+    def explain_week(
+        self, monday: date, occupied: Iterable[Lesson] = ()
+    ) -> tuple[list[Lesson], list[tuple[date, str]]]:
+        """展开一周，并给出**没排上的那些天为什么没排**。
+
+        周日/某天少了晚自习时，光看结果没法判断是配置没写、单双周不符、学期范围外、
+        跳过列表，还是被正课顶掉了 —— 这里把原因带出来，省得猜。
+        """
+        busy_by_day: dict[date, list[Lesson]] = {}
+        for le in occupied:
+            if not le.is_study:
+                busy_by_day.setdefault(le.date, []).append(le)
+
+        lessons: list[Lesson] = []
+        skipped: list[tuple[date, str]] = []
+        for weekday in self.days:
+            d = monday + timedelta(days=weekday)
+            if self.date_from and d < self.date_from:
+                skipped.append((d, f"早于学期开始 {self.date_from}"))
+                continue
+            if self.date_to and d > self.date_to:
+                skipped.append((d, f"晚于学期结束 {self.date_to}"))
+                continue
+            if d in self.skip_dates:
+                skipped.append((d, "在 skip 列表里"))
+                continue
+            if not self._parity_matches(d):
+                parity = "单" if self.parity == "odd" else "双"
+                skipped.append((d, f"配的是{parity}周，这天不是"))
+                continue
+            hit = self._conflicting(d, busy_by_day.get(d, ()))
+            if hit is not None:
+                skipped.append(
+                    (d, f"与正课「{hit.course}」{hit.start}-{hit.end} 重叠（有正课就不排自习）")
+                )
+                continue
+            lessons.append(
+                Lesson(
+                    date=d,
+                    start=self.start,
+                    end=self.end,
+                    course=self.title,
+                    room=self.location,
+                    kind=STUDY_KIND,
+                )
+            )
+        return lessons, skipped
+
     def _conflicting(self, d: date, lessons: Iterable[Lesson]) -> Lesson | None:
         """这一天的正课是否和自习时段有重叠。"""
         start, end = _minutes(self.start), _minutes(self.end)
@@ -189,6 +237,25 @@ def _may_share_days(a: StudySlot, b: StudySlot) -> bool:
     if b.date_to and a.date_from and b.date_to < a.date_from:
         return False
     return True
+
+
+def explain_week(
+    slots: Iterable[StudySlot],
+    monday: date,
+    occupied: Iterable[Lesson] = (),
+) -> tuple[list[Lesson], list[tuple[date, str]]]:
+    """这一周会排哪些自习，以及没排的那些天为什么没排。
+
+    「某天没有晚自习」光看结果无法区分是配置问题还是被正课顶掉，所以把原因一并
+    返回，`study preview` 会打出来。
+    """
+    items = list(slots)
+    lessons = lessons_for_week(items, monday, occupied=occupied)
+    reasons: list[tuple[date, str]] = []
+    for slot in items:
+        _, why = slot.explain_week(monday, occupied=occupied)
+        reasons.extend((d, f"{slot.title}：{reason}") for d, reason in why)
+    return lessons, sorted(reasons)
 
 
 def find_overlaps(slots: Iterable[StudySlot]) -> list[tuple[StudySlot, StudySlot]]:
@@ -472,4 +539,11 @@ def _parse_date_list(value: Any, label: str) -> tuple[date, ...]:
         for sep in ("，", "、", ";", "；"):
             text = text.replace(sep, ",")
         items = [p.strip() for p in text.split(",") if p.strip()]
-    return tuple(_parse_date(v, label) for v in items if v not in (None, ""))
+    dates = []
+    for item in items:
+        if item in (None, ""):
+            continue
+        parsed = _parse_date(item, label)
+        if parsed is not None:
+            dates.append(parsed)
+    return tuple(dates)

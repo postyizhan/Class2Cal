@@ -7,7 +7,7 @@
      课表抓取失败时，自习不能让日历上的正课被当成「已取消」删掉
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -226,6 +226,38 @@ def test_conflict_only_affects_that_day():
 
     lessons = lessons_for_week(slots, MONDAY, occupied=tuesday_class)
     assert [le.date for le in lessons] == [date(2026, 9, 21)]
+
+
+def test_explain_week_says_why_a_day_is_missing():
+    """周日没有晚自习时要说清是配置没写、被正课顶掉，还是单双周/范围/跳过。"""
+    from class2cal.study import explain_week
+
+    slots = parse_slots([slot(days=["mon", "sun"], start="19:00", end="21:30")])
+    sunday = MONDAY + timedelta(days=6)
+    # 学校在周日排了一节晚点名，正好压住自习时段
+    busy = [Lesson(sunday, "19:00", "20:00", "晚点名")]
+
+    lessons, reasons = explain_week(slots, MONDAY, occupied=busy)
+
+    assert [le.date for le in lessons] == [date(2026, 9, 21)]  # 只剩周一
+    assert any(d == sunday and "重叠" in why for d, why in reasons)
+    assert any("晚点名" in why for _, why in reasons)
+
+
+def test_explain_week_reports_parity_and_skip():
+    from class2cal.study import explain_week
+
+    slots = parse_slots(
+        [
+            slot(title="单周", days=["mon"], parity="even"),  # 2026-09-21 是奇周
+            slot(title="请假", days=["wed"], skip=["2026-09-23"]),
+        ]
+    )
+    lessons, reasons = explain_week(slots, MONDAY)
+
+    assert lessons == []
+    assert any(d == MONDAY and "配的是双周" in why for d, why in reasons)
+    assert any("skip" in why for _, why in reasons)
 
 
 def test_merge_study_drops_conflicting_day():

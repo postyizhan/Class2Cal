@@ -752,11 +752,13 @@ def _preview_study(cfg: config.Config, args: argparse.Namespace) -> int:
     for monday in mondays:
         start, end = schedule.week_range(monday)
         busy = weekly.get(monday, [])
-        lessons = study.lessons_for_week(slots, monday, occupied=busy)
+        lessons, skipped = study.explain_week(slots, monday, occupied=busy)
         print(f"{start} ~ {end}（自习 {len(lessons)} 次）")
         for le in lessons:
             room = f" @{le.room}" if le.room else ""
             print(f"  {le.date} {le.start}-{le.end}  {le.course}{room}")
+        for d, why in skipped:
+            print(f"  - {d}（周{'一二三四五六日'[d.weekday()]}）没排：{why}")
         print()
     return 0
 
