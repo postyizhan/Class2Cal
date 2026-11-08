@@ -21,6 +21,28 @@ weeks_ahead = 4
 # 仅当某条记录只给了节次号、没给具体时间时才会用到。
 [schedule.period_times]
 
+# 自习时段：学校教务系统只排正课，晚自习要靠这里补。
+# 填一次就存在本地，之后每次同步照用。`class2cal setup` 也会问这两行。
+# 有正课和这个时段重叠的那天，只写正课，不写自习。
+[study]
+enabled = false
+# days = ["mon", "wed", "sun"]   # 也认 周一..周日 / 1..7
+# start = "19:00"
+# end = "21:30"
+# title = "晚自习"                # 可选，默认 晚自习
+# location = "图书馆"             # 可选
+
+# 要更细（多条时段、单双周、学期范围、跳过某些日期）再加：
+# [[study.slots]]
+# title = "晚自习"
+# days = ["mon", "tue", "wed", "thu", "sun"]
+# start = "18:00"
+# end = "21:00"
+# parity = "all"                # all / odd / even（按 ISO 周次）
+# from = "2026-09-01"           # 可选，学期开始
+# to = "2027-01-15"             # 可选，学期结束
+# skip = ["2026-10-01"]         # 可选，跳过这些日期
+
 [calendar]
 # iCloud 账号（Mac 上登录的那个 Apple ID）
 apple_id = "you@example.com"

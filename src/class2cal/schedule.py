@@ -36,6 +36,10 @@ log = logging.getLogger(__name__)
 UID_PREFIX = "c2c."
 UID_DOMAIN = "class2cal"
 
+# 事件类别。正课来自学校课表接口，自习来自本地配置（学校系统里没有自习）。
+LESSON_KIND = "lesson"
+STUDY_KIND = "study"
+
 # 课表所在的日历名。其他日历（假期、自建日程）不是课，要排除。
 LESSON_CAL_NAME = "我的课表"
 
@@ -61,6 +65,11 @@ class Lesson:
     periods: str = ""  # 原始节次描述，如 "1-4"
     event_id: str = ""  # 服务端事件 ID，仅作排查用
     raw: dict = field(default_factory=dict, repr=False, compare=False)
+    kind: str = LESSON_KIND  # lesson（学校课表）/ study（本地配的自习）
+
+    @property
+    def is_study(self) -> bool:
+        return self.kind == STUDY_KIND
 
     @property
     def uid(self) -> str:
@@ -73,7 +82,11 @@ class Lesson:
         被当成新事件重复导入。
         """
         digest = hashlib.sha256(self.course.encode("utf-8")).hexdigest()[:8]
-        return f"{UID_PREFIX}{self.date:%Y%m%d}.{self.start.replace(':', '')}.{digest}@{UID_DOMAIN}"
+        stamp = f"{self.date:%Y%m%d}.{self.start.replace(':', '')}.{digest}"
+        # 自习多一段 study 标记：正课与自习各自对账，改一类不会误伤另一类。
+        if self.is_study:
+            return f"{UID_PREFIX}{STUDY_KIND}.{stamp}@{UID_DOMAIN}"
+        return f"{UID_PREFIX}{stamp}@{UID_DOMAIN}"
 
     @property
     def fingerprint(self) -> tuple:

@@ -13,6 +13,7 @@
   1. 非空守卫 —— 某周原本有课、这次抓到 0 条时中止该周并告警，不删。
      防的是会话静默失效返回空数据把日历清空。
   2. 未抓取周免疫 —— 只对账本次成功抓取的周，学校还没排的周完全不动。
+     自习事件同样是「只在该周抓取成功时才写入」，抓取失败不新建也不删除。
   3. 前缀隔离 —— 删除/更新前硬校验 UID 前缀，缺失即跳过。
   4. dry-run 优先 —— 先出完整 diff 供人确认。
 """
@@ -113,6 +114,9 @@ def build_event(lesson: Lesson) -> bytes:
         ev.add("location", lesson.room)
 
     notes = []
+    if lesson.is_study:
+        # 自习不是学校排的，写清楚来源，免得日后看着像教务数据。
+        notes.append("自习：本地配置生成（学校课表不含）")
     if lesson.teacher:
         notes.append(f"教师：{lesson.teacher}")
     if lesson.periods:
@@ -209,10 +213,13 @@ class CalendarSyncer:
         """算出某周要做哪些增删改。只读，不落任何改动。"""
         plan = WeekPlan(monday=monday)
         desired = {le.uid: le for le in lessons}
+        # 闸 1 只看正课：自习是本地配置生成的，永远非空，拿它当「抓到数据」的证据
+        # 会让课表抓取失败时照样把正课删光。
+        school = [le for le in lessons if not le.is_study]
 
         # 闸 1：非空守卫。原本有课却抓到 0 条 —— 判为异常，不删。
         prev = state.week_record(monday)
-        if not desired and prev.count > 0:
+        if not school and prev.count > 0:
             plan.skipped_reason = (
                 f"上次同步有 {prev.count} 节课，这次抓到 0 条。"
                 "疑似会话失效或接口变动，已跳过该周，未删除任何事件。"
@@ -313,7 +320,8 @@ class CalendarSyncer:
                 continue
 
             self.apply_week(plan)
-            state.update_week(monday, [le.uid for le in lessons])
+            # 状态只记正课：非空守卫的基线必须是「学校抓到几节」。
+            state.update_week(monday, [le.uid for le in lessons if not le.is_study])
 
         if not dry_run:
             state.save()

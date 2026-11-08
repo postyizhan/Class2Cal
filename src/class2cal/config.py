@@ -17,6 +17,15 @@ import tomli_w
 KEYRING_SERVICE_SSO = "class2cal.sso"
 KEYRING_SERVICE_APPLE = "class2cal.apple"
 
+# [study] 段里由 StudyConfig 建模的键；其余键原样保留
+_STUDY_KNOWN_KEYS = frozenset(
+    {"enabled", "title", "days", "start", "end", "location", "slots"}
+)
+# [schedule] 同理：period_times 是文档里写的用户配置，保存时不能吞掉
+_SCHEDULE_KNOWN_KEYS = frozenset(
+    {"card_wid", "card_id", "cal_wid", "cal_name", "weeks_ahead", "field_map"}
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "config.toml"
 VAR_DIR = PROJECT_ROOT / "var"
@@ -46,10 +55,37 @@ class ScheduleConfig:
     weeks_ahead: int = 4
     # 课表接口入参的覆盖项，学校改字段时用，见 portal._build_schedule_payload。
     field_map: dict[str, Any] = field(default_factory=dict)
+    # 用户手写的其他键（period_times 等），save 时原样写回
+    extra: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_probed(self) -> bool:
         return bool(self.card_wid and self.card_id)
+
+
+@dataclass
+class StudyConfig:
+    """自习时段（学校教务系统里没有晚自习，按本地配置补）。
+
+    两种写法，content 都能用：
+      简写 —— 标题 + 星期 + 起止时间，`class2cal setup` 里问一遍就写进来，够用；
+      进阶 —— slots 列表，一条一个时段，可带 parity / from / to / skip。
+    slots 原样保存 TOML 结构，由 study.parse_slots 校验，save() 能原封不动写回。
+    """
+
+    enabled: bool = False
+    # 简写：只有一条时段时用这几个字段，setup 交互填完即存
+    title: str = "晚自习"
+    # 原样保留 TOML 值（列表或 "mon,wed" 这种字符串），校验交给 study.parse_days。
+    # None = 配置里没写（简写时用默认星期），[] = 用户显式写了空列表（报错）。
+    days: Any = None
+    start: str = ""
+    end: str = ""
+    location: str = ""
+    # 进阶：多条时段
+    slots: list[dict[str, Any]] = field(default_factory=list)
+    # [study] 下用户自己加的其他键，save() 原样写回，不吞用户手写配置
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -68,6 +104,7 @@ class Config:
     sso_base: str = ""      # 统一认证地址，如 https://sso.example.edu.cn
     portal_base: str = ""   # 门户地址，如 https://all.example.edu.cn
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+    study: StudyConfig = field(default_factory=StudyConfig)
     calendar: CalendarConfig = field(default_factory=CalendarConfig)
 
     @property
@@ -96,6 +133,7 @@ def load() -> Config:
 
     sso = raw.get("sso", {})
     sched = raw.get("schedule", {})
+    study_raw = raw.get("study", {}) or {}
     cal = raw.get("calendar", {})
 
     return Config(
@@ -109,6 +147,21 @@ def load() -> Config:
             cal_name=sched.get("cal_name", "我的课表"),
             weeks_ahead=sched.get("weeks_ahead", 4),
             field_map=sched.get("field_map", {}),
+            extra={k: v for k, v in sched.items() if k not in _SCHEDULE_KNOWN_KEYS},
+        ),
+        study=StudyConfig(
+            enabled=bool(study_raw.get("enabled", False)),
+            title=str(study_raw.get("title") or "晚自习"),
+            days=study_raw.get("days"),
+            start=str(study_raw.get("start") or ""),
+            end=str(study_raw.get("end") or ""),
+            location=str(study_raw.get("location") or ""),
+            slots=study_raw.get("slots") or [],
+            extra={
+                k: v
+                for k, v in study_raw.items()
+                if k not in _STUDY_KNOWN_KEYS
+            },
         ),
         calendar=CalendarConfig(
             apple_id=cal.get("apple_id", ""),
@@ -127,6 +180,11 @@ def save(cfg: Config) -> None:
         },
         "portal_base": cfg.portal_base,
         "schedule": {
+            **{
+                k: v
+                for k, v in cfg.schedule.extra.items()
+                if k not in _SCHEDULE_KNOWN_KEYS
+            },
             "card_wid": cfg.schedule.card_wid,
             "card_id": cfg.schedule.card_id,
             "cal_wid": cfg.schedule.cal_wid,
@@ -134,6 +192,7 @@ def save(cfg: Config) -> None:
             "weeks_ahead": cfg.schedule.weeks_ahead,
             "field_map": cfg.schedule.field_map,
         },
+        "study": _study_payload(cfg.study),
         "calendar": {
             "apple_id": cfg.calendar.apple_id,
             "calendar_name": cfg.calendar.calendar_name,
@@ -141,6 +200,31 @@ def save(cfg: Config) -> None:
         },
     }
     CONFIG_PATH.write_text(tomli_w.dumps(payload), encoding="utf-8")
+
+
+def _study_payload(study_cfg: StudyConfig) -> dict[str, Any]:
+    """[study] 段的落盘内容。
+
+    days 为 None 表示「配置里没写，用默认星期」，这时候**不能**写成 []：空列表是
+    「用户显式写空」，加载时会被当成错误。少了这一条，一份「只写 start/end」的
+    合法配置保存一次就变成坏的。
+    """
+    payload: dict[str, Any] = {
+        k: v for k, v in study_cfg.extra.items() if k not in _STUDY_KNOWN_KEYS
+    }
+    payload.update(
+        {
+            "enabled": study_cfg.enabled,
+            "title": study_cfg.title,
+            "start": study_cfg.start,
+            "end": study_cfg.end,
+            "location": study_cfg.location,
+            "slots": study_cfg.slots,
+        }
+    )
+    if study_cfg.days is not None:
+        payload["days"] = study_cfg.days
+    return payload
 
 
 def ensure_var_dirs(cfg: Config) -> None:

@@ -19,6 +19,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import requests
+
 from . import (
     assisted_login,
     browser_login,
@@ -28,10 +30,44 @@ from . import (
     probe_browser,
     schedule,
     sso,
+    study,
 )
 from .state import SyncState
 
 log = logging.getLogger("class2cal")
+
+
+def _brief(exc: BaseException, limit: int = 120) -> str:
+    """把异常压成一行短话，别把整段 DNS/连接错误糊在用户脸上。"""
+    text = " ".join(str(exc).split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+# 交互输入中途遇到 EOF（管道断开 / Ctrl-D）时置位，最后统一告警，
+# 而不是让用户以为「配置已写入」是完整的一次配置。
+_input_truncated = False
+
+
+def _ask(prompt: str) -> str:
+    """input() 的壳：管道断开 / Ctrl-D 时返回空串，而不是抛裸 EOFError。"""
+    global _input_truncated
+    try:
+        return input(prompt)
+    except EOFError:
+        _input_truncated = True
+        print()
+        return ""
+
+
+def _ask_secret(prompt: str) -> str:
+    """getpass 的壳：非 tty / 管道断开时同样不抛裸 traceback。"""
+    global _input_truncated
+    try:
+        return getpass.getpass(prompt)
+    except EOFError:
+        _input_truncated = True
+        print()
+        return ""
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -45,12 +81,14 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    global _input_truncated
+    _input_truncated = False
     cfg = config.load()
 
     print("=== 学校网站配置 ===")
     print("（金智教务管理系统，通常形如 sso.xxx.edu.cn 和 all.xxx.edu.cn）")
 
-    sso_base = input(f"统一认证地址（SSO）[{cfg.sso_base}]：").strip() or cfg.sso_base
+    sso_base = _ask(f"统一认证地址（SSO）[{cfg.sso_base}]：").strip() or cfg.sso_base
     if not sso_base:
         print("SSO 地址不能为空，示例：https://sso.example.edu.cn", file=sys.stderr)
         return 1
@@ -58,7 +96,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         sso_base = f"https://{sso_base}"
     cfg.sso_base = sso_base
 
-    portal_base = input(f"门户地址（网上办事大厅）[{cfg.portal_base}]：").strip() or cfg.portal_base
+    portal_base = _ask(f"门户地址（网上办事大厅）[{cfg.portal_base}]：").strip() or cfg.portal_base
     if not portal_base:
         print("门户地址不能为空，示例：https://all.example.edu.cn", file=sys.stderr)
         return 1
@@ -67,37 +105,94 @@ def cmd_setup(args: argparse.Namespace) -> int:
     cfg.portal_base = portal_base
 
     print("\n=== 账号凭据 ===")
-    username = input(f"统一认证账号（学号）[{cfg.sso_username}]：").strip() or cfg.sso_username
+    username = _ask(f"统一认证账号（学号）[{cfg.sso_username}]：").strip() or cfg.sso_username
     if not username:
         print("账号不能为空", file=sys.stderr)
         return 1
     cfg.sso_username = username
 
     # getpass 不回显；密码只进 Keychain，不写 config.toml
-    password = getpass.getpass("统一认证密码（存入 Keychain，不落盘）：")
+    password = _ask_secret("统一认证密码（存入 Keychain，不落盘）：")
     if password:
         config.set_sso_password(username, password)
         print("已存入 Keychain")
 
-    apple_id = input(f"\nApple ID [{cfg.calendar.apple_id}]：").strip() or cfg.calendar.apple_id
+    apple_id = _ask(f"\nApple ID [{cfg.calendar.apple_id}]：").strip() or cfg.calendar.apple_id
     if apple_id:
         cfg.calendar.apple_id = apple_id
         print("Apple 应用专用密码请到 appleid.apple.com 生成（不是账户密码）")
-        apple_pw = getpass.getpass("Apple 应用专用密码（存入 Keychain）：")
+        apple_pw = _ask_secret("Apple 应用专用密码（存入 Keychain）：")
         if apple_pw:
             # Apple 展示的专用密码带连字符，去掉更省事
             config.set_apple_password(apple_id, apple_pw.replace("-", "").strip())
             print("已存入 Keychain")
 
     cal_name = (
-        input(f"目标日历名 [{cfg.calendar.calendar_name}]：").strip()
+        _ask(f"目标日历名 [{cfg.calendar.calendar_name}]：").strip()
         or cfg.calendar.calendar_name
     )
     cfg.calendar.calendar_name = cal_name
 
+    # 晚自习：学校系统里没有，问一次就存在 config.toml，之后每次同步照用。
+    # 回车 = 保持现状（包括「已关掉」这个状态），要关掉就显式输入 off。
+    flat_window = (
+        f"{cfg.study.start}-{cfg.study.end}"
+        if cfg.study.start and cfg.study.end
+        else ""
+    )
+    has_slots = bool(cfg.study.slots)
+    existing = f"{len(cfg.study.slots)} 条进阶时段" if has_slots else flat_window
+
+    print("\n=== 晚自习（学校只排正课，这里补；回车保持不变，输入 off 关闭）===")
+    if has_slots:
+        hint = "回车不动这些时段"
+    else:
+        hint = f"如 18:00-21:00，当前 {flat_window or '未配置'}"
+    time_text = _ask(f"晚自习时间（{hint}）：").strip()
+
+    if time_text.lower() in ("off", "关", "关闭", "none", "no"):
+        cfg.study.enabled = False
+        print("晚自习同步已关闭（配置里的时段留着，想恢复就再填一次时间）。")
+    elif time_text and has_slots:
+        # 简写和 [[study.slots]] 混着改会互相覆盖，这里不猜，交回子命令。
+        print(
+            f"已有 {len(cfg.study.slots)} 条进阶时段（[[study.slots]]），setup 不改动它们；"
+            "要加/删/改请用 `class2cal study add|remove`，或直接编辑 config.toml。"
+        )
+    elif time_text:
+        days_hint = study.describe_days(cfg.study.days or study.DEFAULT_DAYS)
+        days_text = _ask(f"晚自习是周几（周一,周二 或 mon,tue）[{days_hint}]：").strip()
+        try:
+            start, end = study.parse_time_range(time_text)
+            days = study.parse_days(days_text or cfg.study.days or study.DEFAULT_DAYS)
+        except study.StudyConfigError as exc:
+            print(
+                f"晚自习配置跳过：{exc}\n（之后也能用 `class2cal study add` 补上）",
+                file=sys.stderr,
+            )
+        else:
+            cfg.study.enabled = True
+            cfg.study.title = cfg.study.title or "晚自习"
+            cfg.study.start, cfg.study.end = start, end
+            cfg.study.days = study.day_names(days)
+            print(
+                f"已记下：{cfg.study.title} {study.describe_weekdays(days)} {start}-{end}"
+            )
+    elif existing:
+        state = "已启用" if cfg.study.enabled else "已关闭"
+        print(f"保持原样：{existing}（{state}）")
+    else:
+        print("没有配置晚自习，跳过。")
+
     config.save(cfg)
     config.ensure_var_dirs(cfg)
     print(f"\n配置已写入 {config.CONFIG_PATH}")
+    if _input_truncated:
+        print(
+            "注意：输入提前结束（管道断开或按了 Ctrl-D），以上是当时填到的内容，"
+            "没填的部分保持原样。",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -390,6 +485,26 @@ def _fetch_weekly(
     return weekly, []
 
 
+def _merge_study(
+    cfg: config.Config, weekly: dict[date, list[schedule.Lesson]]
+) -> dict[date, list[schedule.Lesson]]:
+    """把配置里的自习时段并进每周事件列表。
+
+    只并进本次抓取成功的周 —— 抓取失败的周不在 weekly 里，自习也不会凭空写入，
+    否则一个失效的会话会让日历上多出一堆本该对账掉的旧事件。
+    """
+    slots = study.load_slots(cfg)
+    if not slots:
+        return weekly
+
+    merged: dict[date, list[schedule.Lesson]] = {}
+    for monday, lessons in weekly.items():
+        # 有正课和自习时段重叠的那天不排自习：人在上课。
+        both = list(lessons) + study.lessons_for_week(slots, monday, occupied=lessons)
+        merged[monday] = sorted(both, key=lambda x: (x.date, x.start, x.course))
+    return merged
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     cfg = config.load()
     config.ensure_var_dirs(cfg)
@@ -397,11 +512,16 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
     try:
         weekly, failed = _fetch_weekly(cfg, weeks)
+        weekly = _merge_study(cfg, weekly)
     except (sso.SsoError, portal.PortalError, config.ConfigError) as exc:
         print(f"抓取失败：{exc}", file=sys.stderr)
         return 1
+    except study.StudyConfigError as exc:
+        print(f"自习配置有问题：{exc}", file=sys.stderr)
+        return 1
 
     total = sum(len(v) for v in weekly.values())
+    school_total = sum(1 for v in weekly.values() for le in v if not le.is_study)
     for monday in sorted(weekly):
         start, end = schedule.week_range(monday)
         lessons = weekly[monday]
@@ -410,9 +530,12 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             periods = f" [{le.periods}节]" if le.periods else ""
             room = f" @{le.room}" if le.room else ""
             teacher = f" {le.teacher}" if le.teacher else ""
-            print(f"  {le.date} {le.start}-{le.end}  {le.course}{room}{teacher}{periods}")
+            tag = " [自习]" if le.is_study else ""
+            print(f"  {le.date} {le.start}-{le.end}  {le.course}{room}{teacher}{periods}{tag}")
 
-    print(f"\n共 {total} 节课，覆盖 {len(weekly)} 周")
+    study_total = total - school_total
+    tail = f"（正课 {school_total}，自习 {study_total}）" if study_total else ""
+    print(f"\n共 {total} 节课，覆盖 {len(weekly)} 周{tail}")
     if failed:
         print(f"有 {len(failed)} 周抓取失败（不会参与对账）：{[d.isoformat() for d in failed]}")
 
@@ -427,6 +550,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                     "room": le.room,
                     "teacher": le.teacher,
                     "periods": le.periods,
+                    "kind": le.kind,
                     "uid": le.uid,
                 }
                 for le in v
@@ -452,8 +576,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     try:
         weekly, failed = _fetch_weekly(cfg, weeks)
+        weekly = _merge_study(cfg, weekly)
     except (sso.SsoError, portal.PortalError, config.ConfigError) as exc:
         print(f"抓取失败：{exc}", file=sys.stderr)
+        return 1
+    except study.StudyConfigError as exc:
+        print(f"自习配置有问题：{exc}", file=sys.stderr)
         return 1
 
     try:
@@ -517,6 +645,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"目标日历      {cfg.calendar.calendar_name}")
     print(f"课表卡片      {'已探明' if cfg.schedule.is_probed else '(未探明，先跑 probe)'}")
     print(f"抓取窗口      当前周 + 后 {cfg.schedule.weeks_ahead} 周")
+    study_state = "已启用" if cfg.study.enabled else "未启用"
+    try:
+        slot_count = f"{len(study.parse_slots(study.effective_slots(cfg)))} 条时段"
+    except study.StudyConfigError:
+        slot_count = "配置有问题"
+    print(f"自习同步      {study_state}（{slot_count}）")
 
     session = sso.load_session(cfg.session_path)
     alive = bool(session and sso.verify_session(session, cfg))
@@ -530,6 +664,254 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         print("\n还没同步过")
     return 0
+
+
+# ---------- study ----------
+
+
+def _print_study_slots(cfg: config.Config) -> bool:
+    """打印当前自习配置。返回配置是否可用（false 时调用方该给非零退出码）。"""
+    print(f"自习同步      {'已启用' if cfg.study.enabled else '未启用'}")
+    if not cfg.study.enabled:
+        # 关掉时同步根本不读这份配置，别拿残留的错误配置拦住用户看列表。
+        print("  （未启用，配置不做校验；`class2cal study enable` 打开时会检查）")
+        return True
+
+    try:
+        slots = study.parse_slots(study.effective_slots(cfg))
+    except study.StudyConfigError as exc:
+        print(f"  配置有问题：{exc}", file=sys.stderr)
+        return False
+
+    if not slots:
+        print("  还没配置时段。两种填法：")
+        print("    class2cal setup                       # 配置时问一遍，回车跳过")
+        print("    class2cal study add --time 18:00-21:00  # 单独加一条")
+        return True
+
+    for i, s in enumerate(slots, 1):
+        room = f" @{s.location}" if s.location else ""
+        parity = "" if s.parity == "all" else f"，{s.parity} 周"
+        span = ""
+        if s.date_from or s.date_to:
+            span = f"，{s.date_from or '…'} ~ {s.date_to or '…'}"
+        skip = f"，跳过 {len(s.skip_dates)} 天" if s.skip_dates else ""
+        print(
+            f"  [{i}] {s.title}  {s.describe_days()} {s.start}-{s.end}"
+            f"{room}{parity}{span}{skip}"
+        )
+
+    # 自习之间没有优先级：两条撞一起就都写进日历，提醒一句免得以为是 bug。
+    for a, b in study.find_overlaps(slots):
+        print(
+            f"  ! 「{a.title}」{a.start}-{a.end} 与「{b.title}」{b.start}-{b.end} 重叠，"
+            "会各写一条事件"
+        )
+    return True
+
+
+def _preview_study(cfg: config.Config, args: argparse.Namespace) -> int:
+    try:
+        slots = study.parse_slots(study.effective_slots(cfg))
+    except study.StudyConfigError as exc:
+        print(f"自习配置有问题：{exc}", file=sys.stderr)
+        return 1
+
+    if not slots:
+        print("没有可预览的自习时段，先 `class2cal setup` 或 `class2cal study add`。", file=sys.stderr)
+        return 1
+    if not cfg.study.enabled:
+        print("（study.enabled = false，下面只是展开预览，同步时不会写入）\n")
+
+    weeks = 2 if args.weeks is None else args.weeks
+    if weeks < 1:
+        print(f"--weeks 至少是 1（收到 {args.weeks}）。", file=sys.stderr)
+        return 1
+    mondays = list(schedule.iter_week_starts(date.today(), weeks))
+
+    # 尽力抓一次课表：预览里要扣掉「那天有正课」的晚自习，不然看到的比实际多。
+    weekly: dict[date, list[schedule.Lesson]] = {m: [] for m in mondays}
+    try:
+        fetched, failed = _fetch_weekly(cfg, weeks)
+    except (
+        sso.SsoError,
+        portal.PortalError,
+        config.ConfigError,
+        study.StudyConfigError,
+        requests.RequestException,
+        OSError,
+    ) as exc:
+        # 没会话/没探明接口/网络不通：不是错误，只是预览少一层信息，说清楚就行。
+        print(f"（抓不到课表，预览未扣除正课：{_brief(exc)}）")
+    else:
+        if failed:
+            print(f"（有 {len(failed)} 周没抓到课表，这些周的正课没扣）")
+        elif not fetched:
+            print("（接口没返回任何课程，预览未扣除正课）")
+        weekly.update(fetched)
+    for monday in mondays:
+        start, end = schedule.week_range(monday)
+        busy = weekly.get(monday, [])
+        lessons = study.lessons_for_week(slots, monday, occupied=busy)
+        print(f"{start} ~ {end}（自习 {len(lessons)} 次）")
+        for le in lessons:
+            room = f" @{le.room}" if le.room else ""
+            print(f"  {le.date} {le.start}-{le.end}  {le.course}{room}")
+        print()
+    return 0
+
+
+def cmd_study(args: argparse.Namespace) -> int:
+    cfg = config.load()
+    action = args.study_action
+
+    if action in (None, "list"):
+        return 0 if _print_study_slots(cfg) else 1
+
+    if action == "preview":
+        return _preview_study(cfg, args)
+
+    if action == "enable":
+        # 先校验再落盘：如果先把 enabled=true 写进文件，配置又是坏的，之后每次
+        # sync 都会被这份坏配置卡住，用户还不知道为什么。
+        previous = cfg.study.enabled
+        cfg.study.enabled = True
+        try:
+            study.parse_slots(study.effective_slots(cfg))
+        except study.StudyConfigError as exc:
+            cfg.study.enabled = previous
+            print(f"自习配置有问题，没有打开：{exc}", file=sys.stderr)
+            return 1
+    elif action == "disable":
+        cfg.study.enabled = False
+    elif action == "add":
+        if args.time and (args.start or args.end):
+            print(
+                "时间写一套就够：--time 18:00-21:00，或者 --start 18:00 --end 21:00。",
+                file=sys.stderr,
+            )
+            return 1
+        if bool(args.start) != bool(args.end):
+            print(
+                "--start 和 --end 要一起给（或者用 --time 18:00-21:00 写一段）。",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
+            start, end = args.start, args.end
+            if not (start and end):
+                start, end = study.parse_time_range(args.time)
+            days = study.parse_days(args.days or study.DEFAULT_DAYS)
+        except study.StudyConfigError as exc:
+            print(f"这条时段写不通：{exc}", file=sys.stderr)
+            return 1
+
+        slot = {
+            "title": args.title or "晚自习",
+            "days": study.day_names(days),
+            "start": start,
+            "end": end,
+        }
+        if args.location:
+            slot["location"] = args.location
+        if args.parity and args.parity != "all":
+            slot["parity"] = args.parity
+        if args.date_from:
+            slot["from"] = args.date_from
+        if args.date_to:
+            slot["to"] = args.date_to
+        if args.skip:
+            slot["skip"] = [
+                d.strip()
+                for d in args.skip.replace("，", ",").replace("、", ",").split(",")
+                if d.strip()
+            ]
+
+        # 先校验新条目本身，再校验既有配置：两类错误不能混成一句话。
+        try:
+            new_slot = study.parse_slots([slot])[0]
+        except study.StudyConfigError as exc:
+            print(f"这条时段写不通：{exc}", file=sys.stderr)
+            return 1
+
+        try:
+            current = study.parse_slots(study.effective_slots(cfg))
+        except study.StudyConfigError as exc:
+            print(
+                f"你先前的自习配置有问题，先修它再添加：{exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        duplicate = any(
+            (
+                s.title,
+                s.days,
+                s.start,
+                s.end,
+                s.location,
+                s.parity,
+                s.date_from,
+                s.date_to,
+                s.skip_dates,
+            )
+            == (
+                new_slot.title,
+                new_slot.days,
+                new_slot.start,
+                new_slot.end,
+                new_slot.location,
+                new_slot.parity,
+                new_slot.date_from,
+                new_slot.date_to,
+                new_slot.skip_dates,
+            )
+            for s in current
+        )
+        if duplicate:
+            print("已存在完全相同的时段（标题、星期、时间都一样），没有重复添加。")
+            return 0
+
+        cfg.study.slots.append(slot)
+        cfg.study.enabled = True
+    elif action == "remove":
+        try:
+            raw = study.effective_slots(cfg)
+            listed = study.parse_slots(raw)
+        except study.StudyConfigError as exc:
+            print(f"自习配置有问题：{exc}", file=sys.stderr)
+            return 1
+
+        if not listed:
+            print("没有可删除的自习时段。", file=sys.stderr)
+            return 1
+        idx = args.index - 1
+        if not 0 <= idx < len(listed):
+            print(f"编号超范围（1-{len(listed)}）", file=sys.stderr)
+            return 1
+
+        removed = raw.pop(idx)
+        print(f"已删除：{removed.get('title', '(无名)')}")
+
+        # 编号只有一个来源（effective_slots = 简写 + slots）。删完把剩下的整体
+        # 写进 slots、清空简写字段，下次列表和删除才对得上。
+        cfg.study.slots = list(raw)
+        cfg.study.start = ""
+        cfg.study.end = ""
+        # None 而不是 []：空列表是「用户显式写空」，会变成加载即报错的配置
+        cfg.study.days = None
+        cfg.study.location = ""
+        if not raw:
+            cfg.study.enabled = False
+            print("已没有自习时段，自习同步同时关闭。")
+    else:
+        print(f"未知操作：{action}", file=sys.stderr)
+        return 1
+
+    config.save(cfg)
+    print(f"已写入 {config.CONFIG_PATH}\n")
+    return 0 if _print_study_slots(cfg) else 1
 
 
 # ---------- 入口 ----------
@@ -597,6 +979,38 @@ def build_parser() -> argparse.ArgumentParser:
     sf.add_argument("--json", action="store_true", help="附带输出 JSON")
     sf.set_defaults(func=cmd_fetch)
 
+    sst = sub.add_parser("study", help="配置自习时段（学校课表里没有晚自习）")
+    sst.set_defaults(func=cmd_study, study_action="list")
+    st_sub = sst.add_subparsers(dest="study_action", metavar="list|add|remove|enable|disable|preview")
+    st_sub.add_parser("list", help="列出已配置的时段").set_defaults(func=cmd_study)
+    st_add = st_sub.add_parser("add", help="加一条时段")
+    st_add.add_argument("--title", default="晚自习", help="显示在日历上的名字，默认 晚自习")
+    st_add.add_argument("--time", default="", help="时间段，如 18:00-21:00")
+    st_add.add_argument(
+        "--days", default="", help="星期，如 mon,tue,wed,thu,sun 或 周一,周二（默认周日到周四）"
+    )
+    st_add.add_argument("--start", default="", help="开始时间 HH:MM（配合 --end 用）")
+    st_add.add_argument("--end", default="", help="结束时间 HH:MM（配合 --start 用）")
+    st_add.add_argument("--location", default="", help="地点（可选）")
+    st_add.add_argument(
+        "--parity", default="all", choices=list(study.PARITY_VALUES), help="单双周，默认每周"
+    )
+    st_add.add_argument("--from", dest="date_from", default="", help="学期开始 YYYY-MM-DD")
+    st_add.add_argument("--to", dest="date_to", default="", help="学期结束 YYYY-MM-DD")
+    st_add.add_argument("--skip", default="", help="跳过日期，逗号分隔")
+    st_add.set_defaults(func=cmd_study)
+    st_rm = st_sub.add_parser("remove", help="删掉第 N 条时段")
+    st_rm.add_argument("index", type=int, metavar="N")
+    st_rm.set_defaults(func=cmd_study)
+    st_sub.add_parser("enable", help="打开自习同步").set_defaults(func=cmd_study)
+    st_sub.add_parser(
+        "disable",
+        help="关掉自习同步（抓取窗口内自动生成的事件会在下次 sync 清掉，窗口外的不动）",
+    ).set_defaults(func=cmd_study)
+    st_pv = st_sub.add_parser("preview", help="预览展开后的自习事件")
+    st_pv.add_argument("--weeks", type=int, default=2, help="预览周数，默认 2")
+    st_pv.set_defaults(func=cmd_study)
+
     ss = sub.add_parser("sync", help="对账写入日历")
     ss.add_argument("--weeks", type=int, help="抓取周数（含当前周）")
     ss.add_argument("--dry-run", action="store_true", help="只看 diff，不改日历")
@@ -613,6 +1027,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except KeyboardInterrupt:
         print("\n已取消", file=sys.stderr)
+        return 130
+    except EOFError:  # 兜底：交互中途 stdin 关掉，不该吐一整段 traceback
+        print("\n输入提前结束，本次操作未完成。", file=sys.stderr)
         return 130
 
 
