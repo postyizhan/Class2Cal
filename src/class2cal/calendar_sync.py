@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 import caldav
@@ -31,7 +31,7 @@ from icalendar import Calendar as ICalendar
 from icalendar import Event as IEvent
 
 from . import config
-from .schedule import UID_PREFIX, Lesson, week_range
+from .schedule import SCHOOL_TZ, STUDY_KIND, UID_PREFIX, Lesson, week_range
 from .state import SyncState
 
 log = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ def build_event(lesson: Lesson) -> bytes:
     ev.add("summary", lesson.course)
     ev.add("dtstart", lesson.start_dt)
     ev.add("dtend", lesson.end_dt)
-    ev.add("dtstamp", datetime.now())
+    ev.add("dtstamp", datetime.now(timezone.utc))
     if lesson.room:
         ev.add("location", lesson.room)
 
@@ -138,6 +138,36 @@ def _event_uid(event: Any) -> str | None:
     return str(uid) if uid else None
 
 
+def _event_date(event: Any) -> date | None:
+    """工具 UID 中的日期是课表本地日期，不受服务端浮动时间索引方式影响。"""
+    uid = _event_uid(event)
+    if is_owned(uid):
+        stamp = str(uid).removeprefix(UID_PREFIX).removeprefix(f"{STUDY_KIND}.")
+        try:
+            return datetime.strptime(stamp.split(".", 1)[0], "%Y%m%d").date()
+        except ValueError:
+            pass
+
+    try:
+        comp = event.icalendar_component
+    except (AttributeError, KeyError):
+        return None
+    dt = getattr(comp.get("dtstart"), "dt", None) if comp else None
+    if isinstance(dt, datetime):
+        # 旧 floating 保留原墙上时间；明确时区的事件先转换为课表时区。
+        return (dt.astimezone(SCHOOL_TZ) if dt.utcoffset() is not None else dt).date()
+    return dt if isinstance(dt, date) else None
+
+
+def _has_floating_times(event: Any) -> bool:
+    comp = event.icalendar_component
+    return any(
+        isinstance(dt := getattr(comp.get(key), "dt", None), datetime)
+        and dt.utcoffset() is None
+        for key in ("dtstart", "dtend")
+    )
+
+
 def _event_fingerprint(event: Any) -> tuple | None:
     """按与 Lesson.fingerprint 对齐的方式取现有事件的指纹。"""
     try:
@@ -150,6 +180,8 @@ def _event_fingerprint(event: Any) -> tuple | None:
     def _hhmm(key: str) -> str:
         val = comp.get(key)
         dt = getattr(val, "dt", None)
+        if isinstance(dt, datetime) and dt.utcoffset() is not None:
+            dt = dt.astimezone(SCHOOL_TZ)
         return dt.strftime("%H:%M") if isinstance(dt, datetime) else ""
 
     desc = str(comp.get("description") or "")
@@ -228,19 +260,49 @@ class CalendarSyncer:
 
         calendar = self.connect()
         start, end = week_range(monday)
+        window_start = datetime.combine(start, datetime.min.time(), tzinfo=SCHOOL_TZ)
+        window_end = datetime.combine(
+            end + timedelta(days=1), datetime.min.time(), tzinfo=SCHOOL_TZ
+        )
         try:
-            existing = calendar.search(
-                start=datetime.combine(start, datetime.min.time()),
-                end=datetime.combine(end + timedelta(days=1), datetime.min.time()),
-                event=True,
-                expand=False,
+            existing = list(
+                calendar.search(
+                    start=window_start,
+                    end=window_end,
+                    event=True,
+                    expand=False,
+                )
             )
+            # 存量 floating 若按 UTC 索引，周日 16:00 后会落在主窗口之外。
+            # 补到「下周一 00:00 UTC」，连最后一个请求周的旧/取消事件也能找回。
+            legacy_end = datetime.combine(
+                end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
+            ).astimezone(SCHOOL_TZ)
+            if legacy_end > window_end:
+                existing.extend(
+                    calendar.search(
+                        start=window_end,
+                        end=legacy_end,
+                        event=True,
+                        expand=False,
+                    )
+                )
         except DAVError as exc:
             raise CalendarError(f"查询 {start} ~ {end} 的事件失败：{exc}") from exc
 
         owned: dict[str, Any] = {}
+        seen: set[str] = set()
         for ev in existing:
             uid = _event_uid(ev)
+            event_date = _event_date(ev)
+            # CalDAV 返回的是重叠事件；补查也可能命中相邻周。按课表日期归周，
+            # 尤其不能在抓取成功的下一周删除属于抓取失败周的旧 floating 事件。
+            if event_date is None or not start <= event_date <= end:
+                continue
+            key = str(getattr(ev, "url", None) or uid or id(ev))
+            if key in seen:
+                continue
+            seen.add(key)
             # 闸 3：前缀隔离。用户手录的事件在这里就被挡掉了。
             if is_owned(uid):
                 owned[str(uid)] = ev
@@ -250,7 +312,11 @@ class CalendarSyncer:
         for uid, lesson in desired.items():
             if uid not in owned:
                 plan.to_add.append(lesson)
-            elif _event_fingerprint(owned[uid]) != lesson.fingerprint:
+            elif (
+                _event_fingerprint(owned[uid]) != lesson.fingerprint
+                or _has_floating_times(owned[uid])
+            ):
+                # 内容相同也要原地迁移 floating 时间，UID 不变，避免重复新增。
                 plan.to_update.append((lesson, owned[uid]))
 
         for uid, ev in owned.items():

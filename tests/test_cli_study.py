@@ -255,6 +255,13 @@ def test_preview_prints_skip_reason(cfg_path, monkeypatch, capsys):
     )
     monday = date(2026, 11, 2)
     sunday = date(2026, 11, 8)
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return monday
+
+    monkeypatch.setattr(cli, "date", FixedDate)
     monkeypatch.setattr(
         cli,
         "_fetch_weekly",

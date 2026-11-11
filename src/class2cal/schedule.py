@@ -30,11 +30,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Iterator
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
 
 UID_PREFIX = "c2c."
 UID_DOMAIN = "class2cal"
+SCHOOL_TZ = ZoneInfo("Asia/Shanghai")
 
 # 事件类别。正课来自学校课表接口，自习来自本地配置（学校系统里没有自习）。
 LESSON_KIND = "lesson"
@@ -96,14 +98,14 @@ class Lesson:
     @property
     def start_dt(self) -> datetime:
         h, m = self.start.split(":")
-        return datetime.combine(self.date, datetime.min.time()).replace(
+        return datetime.combine(self.date, datetime.min.time(), tzinfo=SCHOOL_TZ).replace(
             hour=int(h), minute=int(m)
         )
 
     @property
     def end_dt(self) -> datetime:
         h, m = self.end.split(":")
-        dt = datetime.combine(self.date, datetime.min.time()).replace(
+        dt = datetime.combine(self.date, datetime.min.time(), tzinfo=SCHOOL_TZ).replace(
             hour=int(h), minute=int(m)
         )
         # 容错：结束不晚于开始时按 1 小时算，避免写出非法事件

@@ -9,6 +9,7 @@
 """
 
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -26,7 +27,7 @@ MONDAY = date(2026, 9, 21)
 class _FakeDt:
     def __init__(self, hhmm: str):
         h, m = hhmm.split(":")
-        self.dt = datetime(2026, 9, 21, int(h), int(m))
+        self.dt = datetime(2026, 9, 21, int(h), int(m), tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 class FakeEvent:
